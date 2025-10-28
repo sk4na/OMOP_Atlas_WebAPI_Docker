@@ -1,0 +1,136 @@
+services:
+  omop54:
+    build: .
+    container_name: omop54
+    ports: ["5432:5432"]
+    environment:
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_USER=postgres
+      - CONSTRAINTS=true
+      - OMOP_DB=omop54
+      - CDM_SCHEMA=cdm
+      - RESULTS_SCHEMA=results
+      - TEMP_SCHEMA=temp
+      - OHDSI_DB_USER=ohdsi
+      - OHDSI_DB_PASS=ohdsi
+    volumes:
+      - ./vocab:/VOCAB
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -h 127.0.0.1 -p 5432 -U postgres -d omop54 >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 120
+      start_period: 60s
+
+  webapi:
+    image: ohdsi/webapi:latest
+    container_name: ohdsi-webapi
+    depends_on:
+      omop54:
+        condition: service_healthy
+    environment:
+      DATASOURCE_DRIVERCLASSNAME: org.postgresql.Driver
+      DATASOURCE_URL: jdbc:postgresql://omop54:5432/omop54
+      DATASOURCE_USERNAME: ohdsi
+      DATASOURCE_PASSWORD: ohdsi
+      DATASOURCE_OHDSI_SCHEMA: webapi
+
+      SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQLDialect
+      SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: webapi
+      SPRING_BATCH_REPOSITORY_TABLEPREFIX: webapi.BATCH_
+
+      FLYWAY_DATASOURCE_DRIVERCLASSNAME: org.postgresql.Driver
+      FLYWAY_DATASOURCE_URL: jdbc:postgresql://omop54:5432/omop54
+      FLYWAY_DATASOURCE_USERNAME: ohdsi
+      FLYWAY_DATASOURCE_PASSWORD: ohdsi
+      FLYWAY_LOCATIONS: classpath:db/migration/postgresql
+      FLYWAY_PLACEHOLDERS_OHDSISCHEMA: webapi
+      FLYWAY_SCHEMAS: webapi
+
+      SECURITY_ORIGIN: "http://localhost:8081"
+      SECURITY_CORS_ENABLED: "true"
+      SECURITY_SSL_ENABLED: "false"
+
+      # Just to be sure proxies don't mess with it
+      JAVA_TOOL_OPTIONS: >-
+        -Djava.net.preferIPv4Stack=true
+        -Dhttp.proxyHost=
+        -Dhttps.proxyHost=
+        -DsocksProxyHost=
+
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/WebAPI/info"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  atlas:
+    image: ohdsi/atlas:latest
+    container_name: ohdsi-atlas
+    depends_on: ["webapi"]
+    ports: ["8081:8080"]
+    volumes:
+      - ./config-local.js:/usr/share/nginx/html/assets/config-local.js:ro
+      - ./default.conf:/etc/nginx/conf.d/default.conf:ro    
+  
+  webapi-seeder:
+    image: postgres:14
+    container_name: ohdsi-webapi-seeder
+    depends_on:
+      omop54:
+        condition: service_healthy
+      webapi:
+        condition: service_healthy
+    volumes:
+      - ./scripts/seed-webapi.sh:/seed-webapi.sh:ro
+    environment:
+      PGHOST: omop54
+      PGPORT: 5432
+      PGDATABASE: omop54
+      PGUSER: postgres
+      PGPASSWORD: password
+      WEBAPI_SCHEMA: webapi
+      CDM_SCHEMA: cdm
+      RESULTS_SCHEMA: results
+      OHDSI_DB_USER: ohdsi
+      OHDSI_DB_PASS: ohdsi
+    command: ["/bin/bash", "/seed-webapi.sh"]
+    restart: "no"
+
+  achilles:
+    profiles: ["achilles"]
+    build:
+      context: .
+      dockerfile: Achilles.Dockerfile
+    container_name: ohdsi-achilles
+    depends_on:
+      omop54:
+        condition: service_healthy
+    environment:
+      DBMS: postgresql
+      DB_HOST: omop54
+      DB_PORT: "5432"
+      DB_NAME: omop54
+      DB_USER: ohdsi
+      DB_PASSWORD: ohdsi
+
+      CDM_SCHEMA: cdm
+      VOCAB_SCHEMA: cdm
+      RESULTS_SCHEMA: results
+      TEMP_SCHEMA: temp
+
+      # Optional knobs
+      CDM_VERSION: "5.4"
+      NUM_THREADS: "4"
+      SMALL_CELL_COUNT: "5"
+      CREATE_TABLES: "true"     # let Achilles create its results tables if missing
+      EXPORT_JSON: "true"       # also export JSON for Achilles Web, diagnostics, etc.
+    volumes:
+      - ./scripts/run_achilles.R:/run_achilles.R:ro
+      - ./achilles-output:/output
+    command: ["Rscript", "/run_achilles.R"]
+    restart: "no"
+
