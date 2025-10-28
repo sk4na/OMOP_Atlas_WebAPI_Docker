@@ -1,0 +1,15 @@
+# Normalize text files
+*               text=auto
+
+# Always use LF for scripts run in Linux containers
+*.sh            text eol=lf
+*.bash          text eol=lf
+Dockerfile      text eol=lf
+docker-compose*.yml text eol=lf
+*.yml           text eol=lf
+
+# (Optional) keep these as-is
+*.png           -text
+*.jpg           -text
+*.pdf           -text
+
